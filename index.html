@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en" class="theme-dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, maximum-scale=1.0, user-scalable=no">
+    <meta name="description" content="Modern RSVP Reader - Fast and responsive reading experience">
+    <meta name="theme-color" content="#000000">
+
+    <!-- 
+      Content Security Policy (CSP)
+      Helps prevent cross-site scripting (XSS) and other injection attacks by restricting 
+      the sources of content such as scripts, styles, and images.
+    -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self' blob: data:;
+                   font-src 'self' https://fonts.gstatic.com data: blob: https://cdn.jsdelivr.net;
+                   script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net;
+                   style-src 'self' 'unsafe-inline' blob: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://fonts.googleapis.com;
+                   img-src 'self' data: blob:;
+                   frame-src 'self' blob: data:;
+                   connect-src 'self' blob: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net;">
+
+    <title>Modern RSVP Reader</title>
+    
+    <!-- Favicon: An inline SVG for the book icon -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='100%' height='100%' fill='currentColor' viewBox='0 0 16 16'><path d='M3 0h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2v-1h1v1a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v1H1V2a2 2 0 0 1 2-2'/><path d='M1 5v-.5a.5.5 0 0 1 1 0V5h.5a.5.5 0 0 1 0 1h-2a.5.5 0 0 1 0-1zm0 3v-.5a.5.5 0 0 1 1 0V8h.5a.5.5 0 0 1 0 1h-2a.5.5 0 0 1 0-1zm0 3v-.5a.5.5 0 0 1 1 0v.5h.5a.5.5 0 0 1 0 1h-2a.5.5 0 0 1 0-1z'/></svg>">
+
+    <!-- External Stylesheets and Preconnections -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    
+    <!-- Preconnect to CDNs for faster resource loading -->
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Arvo&family=IBM+Plex+Mono&family=Lato&display=swap" rel="stylesheet">
+
+    <!-- Use relative path so stylesheet loads correctly when opening the file locally -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div id="app">
+
+        <!-- Top Application Bar -->
+        <header id="topBar" class="app-bar">
+            <div class="bar-group left">
+                <button id="settingsToggleBtn" class="btn icon-btn" title="Toggle Settings (S)" aria-label="Toggle Settings Panel" aria-expanded="false">
+                    <i class="bi bi-gear-fill"></i>
+                </button>
+            </div>
+
+            <div class="bar-group center speed-control-container">
+                <div class="wpm-slider-wrapper">
+                    <div id="wpmPopup" class="wpm-popup"><span id="wpmValuePopup">300</span> WPM</div>
+                    <input type="range" id="wpmSlider" min="50" max="1200" step="25" value="300" title="Words Per Minute">
+                </div>
+            </div>
+
+            <div class="bar-group right">
+                <button id="contextToggleBtn" class="btn icon-btn" title="Toggle Document View (D)" aria-label="Toggle Document View Panel" aria-expanded="false">
+                    <i class="bi bi-file-text-fill"></i>
+                </button>
+            </div>
+        </header>
+
+
+        <!-- Fullscreen RSVP Display Container -->
+        <div id="fullscreenRsvpWordContainer"><span id="currentWord"></span></div>
+
+
+        <!-- Main Content Area (Panels and Reader) -->
+        <main class="main-content">
+
+            <!-- Left Settings Panel -->
+            <aside id="settingsPanelContainer" class="panel left-panel">
+                <div class="panel-content">
+                    <section class="settings-section">
+                        <h3 class="settings-section-title">Reading</h3>
+                        <div class="settings-group">
+                            <label for="textSizeSlider">Text Size: <span id="textSizeValue" class="value-badge">100%</span></label>
+                            <div class="slider-container">
+                                <span style="font-size: 0.8em;" aria-hidden="true">A</span>
+                                <input type="range" id="textSizeSlider" min="50" max="200" step="10" value="100" title="Adjust Text Size">
+                                <span style="font-size: 1.2em;" aria-hidden="true">A</span>
+                            </div>
+                        </div>
+                        <div class="settings-group">
+                            <label>Font Style</label>
+                            <div class="font-style-buttons">
+                                <button class="btn font-btn" data-font="sans" title="Sans-serif">System</button>
+                                <button class="btn font-btn" data-font="serif" title="Serif">Serif</button>
+                                <button class="btn font-btn" data-font="mono" title="Monospace">Mono</button>
+                                <button class="btn font-btn" data-font="lato" title="Lato">Lato</button>
+                                <button class="btn font-btn" data-font="arvo" title="Arvo">Arvo</button>
+                                <button class="btn font-btn" data-font="ibm-plex-mono" title="IBM Plex Mono">Plex Mono</button>
+                            </div>
+                        </div>
+                        <div class="settings-group toggle-switch-container">
+                            <label for="bionicTextToggle" class="toggle-label">Bionic Text</label>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="bionicTextToggle">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </section>
+                    <section class="settings-section">
+                        <h3 class="settings-section-title">Appearance</h3>
+                        <div id="themeSelector" class="theme-options">
+                            <button class="btn theme-btn" data-theme="dark" title="Dark"><span class="theme-preview dark"></span>Dark</button>
+                            <button class="btn theme-btn" data-theme="light" title="Light"><span class="theme-preview light"></span>Light</button>
+                            <button class="btn theme-btn" data-theme="sepia" title="Sepia"><span class="theme-preview sepia"></span>Sepia</button>
+                            <button class="btn theme-btn" data-theme="neon" title="Neon"><span class="theme-preview neon"></span>Neon</button>
+                            <button class="btn theme-btn" data-theme="ocean" title="Ocean"><span class="theme-preview ocean"></span>Ocean</button>
+                            <button class="btn theme-btn" data-theme="forest" title="Forest"><span class="theme-preview forest"></span>Forest</button>
+                            <button class="btn theme-btn" data-theme="material-dark" title="Material Dark"><span class="theme-preview material-dark"></span>Material</button>
+                            <button class="btn theme-btn" data-theme="amoled-black" title="Amoled Black"><span class="theme-preview amoled-black"></span>Amoled</button>
+                        </div>
+                    </section>
+                </div>
+            </aside>
+
+
+            <!-- Center RSVP Reader Panel -->
+            <section class="panel main-panel">
+                <div id="fileDropArea" class="file-drop-area">
+                    <input type="file" id="fileInput" accept=".txt,.pdf,.epub,.docx" aria-labelledby="fileDropLabelText">
+                    <label for="fileInput" class="file-drop-label">
+                        <i class="bi bi-file-earmark-arrow-up-fill file-icon"></i>
+                        <span id="fileDropLabelText" class="file-text">Drag & drop file or click to upload</span>
+                        <span class="file-hint">Supports: TXT, PDF, EPUB, DOCX</span>
+                    </label>
+                </div>
+
+                <div id="rsvpDisplay" class="rsvp-display">
+                    <span id="normalWordSpan">Your text will appear here.</span>
+                </div>
+
+                <div id="messageArea" class="message-area" role="status" aria-live="polite"></div>
+            </section>
+
+
+            <!-- Right Document View Panel -->
+            <aside id="contextPanelContainer" class="panel right-panel">
+                <div class="panel-content viewer-area">
+                    <div id="viewerPlaceholder" class="viewer-container active">
+                        <div class="placeholder-content">
+                            <i class="bi bi-file-earmark-text placeholder-icon"></i>
+                            <h3>No Document Loaded</h3>
+                            <p>Upload a file to view its contents here.</p>
+                        </div>
+                    </div>
+                    <div id="viewerText" class="viewer-container"></div>
+                </div>
+            </aside>
+        </main>
+
+
+        <!-- Bottom Control Bar -->
+        <footer id="bottomBar" class="app-bar">
+            <button id="restartBtn" class="btn icon-btn" title="Restart (Home)" aria-label="Restart Reading"><i class="bi bi-arrow-counterclockwise"></i></button>
+            <button id="prevBtn" class="btn icon-btn" title="Previous Word (←)" aria-label="Previous Word"><i class="bi bi-skip-start-fill"></i></button>
+            <button id="playPauseBtn" class="btn play-pause-btn" title="Play (Space)" aria-label="Play or Pause Reading" disabled>
+                <i class="bi bi-play-fill play-icon"></i>
+                <i class="bi bi-pause-fill pause-icon" style="display:none;"></i>
+            </button>
+            <button id="nextBtn" class="btn icon-btn" title="Next Word (→)" aria-label="Next Word"><i class="bi bi-skip-end-fill"></i></button>
+            <button id="fullscreenBtn" class="btn icon-btn" title="Toggle Fullscreen (F)" aria-label="Toggle Fullscreen Mode">
+                <i class="bi bi-fullscreen fullscreen-enter-icon"></i>
+                <i class="bi bi-fullscreen-exit fullscreen-exit-icon" style="display:none;"></i>
+            </button>
+        </footer>
+    </div>
+
+
+    <!-- External Libraries for File Processing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.10.0/mammoth.browser.js"></script>
+    
+
+    <!-- Main Application Script -->
+    <script src="script.js"></script>
+</body>
+</html>
