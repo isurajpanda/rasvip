@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # RSVP Reader
 
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -122,3 +123,7 @@ We welcome contributions of all kinds! Whether it's reporting a bug, suggesting 
  **Rapid Serial Visual Presentation** - Wikipedia. [https://en.wikipedia.org/wiki/Rapid_serial_visual_presentation](https://en.wikipedia.org/wiki/Rapid_serial_visual_presentation)
 
  **Bionic Reading®** - The official Bionic Reading website. [https://bionic-reading.com/](https://bionic-reading.com/)
+=======
+# rasvip
+ A modern, client-side speed reader using RSVP and Bionic Reading to boost your focus and reading speed.
+>>>>>>> 9ce8e96404b4f04e7466aa056de37c5b876a8c16
