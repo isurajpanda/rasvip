@@ -13,7 +13,11 @@
 
         // Central object to hold the application's current state.
         const AppState = {
-            wordsOnly: [],          // Array of all words from the document.
+            // Compact text storage for the entire document
+            flatText: '',
+            wordStartIndices: [],   // Start index of each word in flatText
+            wordEndIndices: [],     // End index (exclusive) of each word in flatText
+            pauseFlags: [],         // 0 none, 1 comma, 2 period, 3 paragraph
             currentItemIndex: 0,    // Index of the currently displayed word.
             pauseMap: {},           // Maps word indices to pause multipliers (for punctuation).
             chapterData: [],        // Holds data for EPUB chapters for virtualization.
@@ -136,7 +140,7 @@
             if (DOM.currentWordSpanFS) DOM.currentWordSpanFS.style.fontFamily = fontVar;
             if (DOM.viewerText) DOM.viewerText.style.fontFamily = fontVar;
 
-            if (AppState.wordsOnly.length > 0) {
+            if (AppState.wordStartIndices.length > 0) {
                 highlightContextWord(AppState.currentItemIndex - 1);
             }
         }
@@ -154,7 +158,7 @@
                 requestAnimationFrame(() => {
                     DOM.html.classList.remove('theme-switching');
                     isApplyingTheme = false;
-                    if (AppState.wordsOnly.length > 0) {
+                    if (AppState.wordStartIndices.length > 0) {
                         highlightContextWord(AppState.currentItemIndex - 1);
                     }
                 });
@@ -190,11 +194,11 @@
 
         // Enables or disables player controls based on whether content is loaded.
         function updatePlayerControlsState() {
-            const hasContent = AppState.wordsOnly.length > 0;
+            const hasContent = AppState.wordStartIndices.length > 0;
             DOM.playPauseBtn.disabled = !hasContent;
             DOM.restartBtn.disabled = !hasContent;
             DOM.prevBtn.disabled = !hasContent || AppState.currentItemIndex === 0;
-            DOM.nextBtn.disabled = !hasContent || AppState.currentItemIndex >= AppState.wordsOnly.length - 1;
+            DOM.nextBtn.disabled = !hasContent || AppState.currentItemIndex >= AppState.wordStartIndices.length - 1;
         }
 
         // Functions for managing UI visibility in fullscreen mode.
@@ -211,7 +215,10 @@
             if (AppState.viewerObserver) AppState.viewerObserver.disconnect();
             AppState.viewerObserver = null;
             AppState.epubBook = null;
-            AppState.wordsOnly = [];
+            AppState.flatText = '';
+            AppState.wordStartIndices = [];
+            AppState.wordEndIndices = [];
+            AppState.pauseFlags = [];
             AppState.pauseMap = {};
             AppState.chapterData = [];
             AppState.blockData = [];
@@ -298,10 +305,15 @@
         }
 
         // The main RSVP loop. Displays a word, waits, and calls itself for the next word.
+        function getWordAt(index) {
+            if (index < 0 || index >= AppState.wordStartIndices.length) return '';
+            return AppState.flatText.slice(AppState.wordStartIndices[index], AppState.wordEndIndices[index]);
+        }
+
         async function displayCurrentItem() {
-            if (!AppState.isPlaying || AppState.currentItemIndex >= AppState.wordsOnly.length) {
+            if (!AppState.isPlaying || AppState.currentItemIndex >= AppState.wordStartIndices.length) {
                 stopRSVP();
-                if (AppState.wordsOnly.length > 0) {
+                if (AppState.wordStartIndices.length > 0) {
                     setMessage('End of document.', 'info', 3000);
                     await highlightContextWord(-1); // Unhighlight all words
                     displayWordWithFixation('END');
@@ -309,14 +321,18 @@
                 return;
             }
 
-            const word = AppState.wordsOnly[AppState.currentItemIndex];
+            const word = getWordAt(AppState.currentItemIndex);
             let delay = Config.BASE_DELAY_MS();
 
             displayWordWithFixation(word);
             await highlightContextWord(AppState.currentItemIndex);
 
             // Apply pause multipliers for punctuation.
-            const pauseMultiplier = AppState.pauseMap[AppState.currentItemIndex];
+            const pauseFlag = AppState.pauseFlags[AppState.currentItemIndex] || 0;
+            const pauseMultiplier = pauseFlag === 3 ? Config.PAUSE_MULTIPLIERS.paragraph
+                                 : pauseFlag === 2 ? Config.PAUSE_MULTIPLIERS.period
+                                 : pauseFlag === 1 ? Config.PAUSE_MULTIPLIERS.comma
+                                 : undefined;
             if (pauseMultiplier) delay *= pauseMultiplier;
 
             AppState.currentItemIndex++;
@@ -328,12 +344,12 @@
 
         // Starts the RSVP reader.
         function startRSVP() {
-            if (AppState.wordsOnly.length === 0) return;
+            if (AppState.wordStartIndices.length === 0) return;
             stopRSVP(); 
             AppState.isPlaying = true; 
             updatePlayPauseButton();
             // If at the end, restart from the beginning.
-            if (AppState.currentItemIndex >= AppState.wordsOnly.length) AppState.currentItemIndex = 0;
+            if (AppState.currentItemIndex >= AppState.wordStartIndices.length) AppState.currentItemIndex = 0;
             DOM.rsvpDisplay.classList.add('visible'); 
             DOM.fileDropArea.classList.add('hidden');
             displayCurrentItem();
@@ -349,59 +365,72 @@
 
         // Processes a raw text string into an array of words and a punctuation pause map.
         function processText(text) {
-            AppState.wordsOnly = []; 
-            AppState.pauseMap = {}; 
+            AppState.flatText = '';
+            AppState.wordStartIndices = [];
+            AppState.wordEndIndices = [];
+            AppState.pauseFlags = [];
+            AppState.pauseMap = {}; // kept for compatibility in some flows
             AppState.currentItemIndex = 0;
 
-            const tokens = text.split(/(\s+)/); // Split by whitespace, keeping the whitespace.
+            const tokens = text.split(/(\s+)/);
+            let currentOffset = 0;
             let wordIndexCounter = 0;
-
             tokens.forEach(token => {
                 if (/\s+/.test(token)) {
-                    // Detect paragraph breaks for longer pauses.
+                    AppState.flatText += token;
                     if (token.includes('\n\n') && wordIndexCounter > 0) {
-                        AppState.pauseMap[wordIndexCounter - 1] = Config.PAUSE_MULTIPLIERS.paragraph;
+                        AppState.pauseFlags[wordIndexCounter - 1] = 3;
                     }
+                    currentOffset += token.length;
                 } else if (token) {
-                    AppState.wordsOnly.push(token);
+                    AppState.wordStartIndices.push(currentOffset);
+                    AppState.flatText += token;
+                    currentOffset += token.length;
+                    AppState.wordEndIndices.push(currentOffset);
                     const lastChar = token.slice(-1);
                     if ('.?!'.includes(lastChar)) {
-                        AppState.pauseMap[wordIndexCounter] = Config.PAUSE_MULTIPLIERS.period;
+                        AppState.pauseFlags[wordIndexCounter] = 2;
                     } else if (',;:'.includes(lastChar)) {
-                        AppState.pauseMap[wordIndexCounter] = Config.PAUSE_MULTIPLIERS.comma;
+                        AppState.pauseFlags[wordIndexCounter] = 1;
                     }
                     wordIndexCounter++;
                 }
             });
 
-            if (AppState.wordsOnly.length > 0) {
-                displayWordWithFixation(AppState.wordsOnly[0]);
+            if (AppState.wordStartIndices.length > 0) {
+                displayWordWithFixation(AppState.flatText.slice(AppState.wordStartIndices[0], AppState.wordEndIndices[0]));
             }
         }
 
         // Append a text fragment without creating a single giant string in memory
         function appendTextFragment(text, addParagraphBreakAfter = false) {
             if (!text || typeof text !== 'string') return;
-            let wordIndexCounter = AppState.wordsOnly.length;
+            let currentOffset = AppState.flatText.length;
+            let wordIndexCounter = AppState.wordStartIndices.length;
             const tokens = text.split(/(\s+)/);
             tokens.forEach(token => {
                 if (/\s+/.test(token)) {
+                    AppState.flatText += token;
                     if (token.includes('\n\n') && wordIndexCounter > 0) {
-                        AppState.pauseMap[wordIndexCounter - 1] = Config.PAUSE_MULTIPLIERS.paragraph;
+                        AppState.pauseFlags[wordIndexCounter - 1] = 3;
                     }
+                    currentOffset += token.length;
                 } else if (token) {
-                    AppState.wordsOnly.push(token);
+                    AppState.wordStartIndices.push(currentOffset);
+                    AppState.flatText += token;
+                    currentOffset += token.length;
+                    AppState.wordEndIndices.push(currentOffset);
                     const lastChar = token.slice(-1);
                     if ('.?!'.includes(lastChar)) {
-                        AppState.pauseMap[wordIndexCounter] = Config.PAUSE_MULTIPLIERS.period;
+                        AppState.pauseFlags[wordIndexCounter] = 2;
                     } else if (',;:'.includes(lastChar)) {
-                        AppState.pauseMap[wordIndexCounter] = Config.PAUSE_MULTIPLIERS.comma;
+                        AppState.pauseFlags[wordIndexCounter] = 1;
                     }
                     wordIndexCounter++;
                 }
             });
-            if (addParagraphBreakAfter && AppState.wordsOnly.length > 0) {
-                AppState.pauseMap[AppState.wordsOnly.length - 1] = Config.PAUSE_MULTIPLIERS.paragraph;
+            if (addParagraphBreakAfter && AppState.wordStartIndices.length > 0) {
+                AppState.pauseFlags[AppState.wordStartIndices.length - 1] = 3;
             }
         }
 
@@ -498,12 +527,12 @@
                     processText(content);
                 }
 
-                if (AppState.wordsOnly.length === 0) {
+                if (AppState.wordStartIndices.length === 0) {
                     throw new Error("No text could be extracted from the document.");
                 }
 
                 buildAndLoadContextViewer();
-                if (AppState.wordsOnly.length > 0) {
+                if (AppState.wordStartIndices.length > 0) {
                     highlightContextWord(0);
                 }
 
@@ -605,13 +634,13 @@
             if (!placeholder) return;
 
             const start = blockInfo.startWordIndex;
-            const end = Math.min(start + blockInfo.wordCount, AppState.wordsOnly.length);
+            const end = Math.min(start + blockInfo.wordCount, AppState.wordStartIndices.length);
             let html = '<p>';
             for (let i = start; i < end; i++) {
-                const word = AppState.wordsOnly[i];
+                const word = AppState.flatText.slice(AppState.wordStartIndices[i], AppState.wordEndIndices[i]);
                 const displayWord = AppState.isBionicTextEnabled ? toBionicText(word) : word;
                 html += `<span class="context-word" data-word-index="${i}" tabindex="0">${displayWord}</span>`;
-                if (AppState.pauseMap[i] === Config.PAUSE_MULTIPLIERS.paragraph) html += '</p><p>';
+                if ((AppState.pauseFlags[i] || 0) === 3) html += '</p><p>';
                 else html += ' ';
             }
             html += '</p>';
@@ -621,9 +650,9 @@
             placeholder.querySelectorAll('.context-word').forEach(el => {
                 const jumpToWord = () => {
                     const wordIdx = parseInt(el.dataset.wordIndex, 10);
-                    if (!isNaN(wordIdx) && wordIdx < AppState.wordsOnly.length) {
+                    if (!isNaN(wordIdx) && wordIdx < AppState.wordStartIndices.length) {
                         stopRSVP(); AppState.currentItemIndex = wordIdx;
-                        displayWordWithFixation(AppState.wordsOnly[wordIdx]);
+                        displayWordWithFixation(AppState.flatText.slice(AppState.wordStartIndices[wordIdx], AppState.wordEndIndices[wordIdx]));
                         highlightContextWord(wordIdx); updatePlayerControlsState();
                     }
                 };
@@ -737,7 +766,7 @@
 
             } else { // For non-EPUB files, virtualize by blocks
                 AppState.blockData = [];
-                const totalWords = AppState.wordsOnly.length;
+                const totalWords = AppState.wordStartIndices.length;
                 const blockSize = Config.VIRTUAL_BLOCK_WORDS;
                 for (let start = 0, blockIndex = 0; start < totalWords; start += blockSize, blockIndex++) {
                     const count = Math.min(blockSize, totalWords - start);
@@ -778,11 +807,12 @@
             document.querySelectorAll('.context-word').forEach(span => {
                 if (span.querySelector('a')) { return; }
                 const wordIndex = parseInt(span.dataset.wordIndex, 10);
-                const word = AppState.wordsOnly[wordIndex];
+                const word = AppState.flatText.slice(AppState.wordStartIndices[wordIndex], AppState.wordEndIndices[wordIndex]);
                 span.innerHTML = isEnabled ? toBionicText(word) : word;
             });
             
-            const currentWord = AppState.wordsOnly[AppState.currentItemIndex - 1];
+            const idx = AppState.currentItemIndex - 1;
+            const currentWord = idx >= 0 ? AppState.flatText.slice(AppState.wordStartIndices[idx], AppState.wordEndIndices[idx]) : '';
             if (currentWord) {
                 displayWordWithFixation(currentWord);
             }
@@ -845,19 +875,19 @@
             DOM.fileDropArea.addEventListener('drop', e => { e.preventDefault(); DOM.fileDropArea.classList.remove('drag-over'); if(e.dataTransfer.files[0]) loadAndProcessFile(e.dataTransfer.files[0]); });
             
             // Player controls
-            DOM.restartBtn.addEventListener('click', () => { AppState.currentItemIndex = 0; stopRSVP(); if(AppState.wordsOnly.length>0){ displayWordWithFixation(AppState.wordsOnly[0]); highlightContextWord(0); } updatePlayerControlsState(); });
+            DOM.restartBtn.addEventListener('click', () => { AppState.currentItemIndex = 0; stopRSVP(); if(AppState.wordStartIndices.length>0){ displayWordWithFixation(AppState.flatText.slice(AppState.wordStartIndices[0], AppState.wordEndIndices[0])); highlightContextWord(0); } updatePlayerControlsState(); });
             DOM.prevBtn.addEventListener('click', () => {
                 if (AppState.currentItemIndex <= 1) { DOM.restartBtn.click(); return; }
                 stopRSVP(); AppState.currentItemIndex = Math.max(0, AppState.currentItemIndex - 2);
-                const word = AppState.wordsOnly[AppState.currentItemIndex];
+                const word = getWordAt(AppState.currentItemIndex);
                 if (word) { displayWordWithFixation(word); highlightContextWord(AppState.currentItemIndex); }
                 updatePlayerControlsState();
             });
             DOM.playPauseBtn.addEventListener('click', () => AppState.isPlaying ? stopRSVP() : startRSVP());
             DOM.nextBtn.addEventListener('click', () => {
-                if (AppState.currentItemIndex >= AppState.wordsOnly.length - 1) return;
+                if (AppState.currentItemIndex >= AppState.wordStartIndices.length - 1) return;
                 stopRSVP();
-                const word = AppState.wordsOnly[AppState.currentItemIndex];
+                const word = getWordAt(AppState.currentItemIndex);
                 if (word) { displayWordWithFixation(word); highlightContextWord(AppState.currentItemIndex); }
                 AppState.currentItemIndex++; updatePlayerControlsState();
             });
