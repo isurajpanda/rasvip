@@ -36,7 +36,8 @@
             isUserScrolling: false,         // Flag to detect if user is scrolling the context view.
             scrollTimeoutId: null,          // Timeout to reset the user scrolling flag.
             isProgrammaticScroll: false,    // Flag to differentiate user scroll from code-driven scroll.
-            isBionicTextEnabled: false      // Is Bionic Text enabled?
+            isBionicTextEnabled: false,     // Is Bionic Text enabled?
+            blockData: []           // Holds non-EPUB virtualized blocks metadata
         };
 
         // Configuration constants for default values and behavior.
@@ -52,6 +53,7 @@
                 period: 2.2,
                 paragraph: 3.5 
             },
+            VIRTUAL_BLOCK_WORDS: 1500 // Words per block for non-EPUB virtualization
         };
 
 
@@ -212,6 +214,7 @@
             AppState.wordsOnly = [];
             AppState.pauseMap = {};
             AppState.chapterData = [];
+            AppState.blockData = [];
             AppState.currentItemIndex = 0;
             AppState.currentFileType = null;
             AppState.loadedFileName = null;
@@ -376,6 +379,32 @@
             }
         }
 
+        // Append a text fragment without creating a single giant string in memory
+        function appendTextFragment(text, addParagraphBreakAfter = false) {
+            if (!text || typeof text !== 'string') return;
+            let wordIndexCounter = AppState.wordsOnly.length;
+            const tokens = text.split(/(\s+)/);
+            tokens.forEach(token => {
+                if (/\s+/.test(token)) {
+                    if (token.includes('\n\n') && wordIndexCounter > 0) {
+                        AppState.pauseMap[wordIndexCounter - 1] = Config.PAUSE_MULTIPLIERS.paragraph;
+                    }
+                } else if (token) {
+                    AppState.wordsOnly.push(token);
+                    const lastChar = token.slice(-1);
+                    if ('.?!'.includes(lastChar)) {
+                        AppState.pauseMap[wordIndexCounter] = Config.PAUSE_MULTIPLIERS.period;
+                    } else if (',;:'.includes(lastChar)) {
+                        AppState.pauseMap[wordIndexCounter] = Config.PAUSE_MULTIPLIERS.comma;
+                    }
+                    wordIndexCounter++;
+                }
+            });
+            if (addParagraphBreakAfter && AppState.wordsOnly.length > 0) {
+                AppState.pauseMap[AppState.wordsOnly.length - 1] = Config.PAUSE_MULTIPLIERS.paragraph;
+            }
+        }
+
 
         // --- File Handling & Processing ---
 
@@ -398,20 +427,21 @@
             const fileExt = file.name.split('.').pop().toLowerCase();
             
             if (fileExt === 'txt') {
-                return { type: 'text', content: await file.text() };
+                const text = await file.text();
+                return { type: 'text', content: text };
             }
             
             if (fileExt === 'pdf') {
                 if (!window.pdfjsLib) throw new Error("PDF.js library is not loaded.");
                 const arrayBuffer = await file.arrayBuffer();
                 const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-                let fullText = "";
+                const parts = [];
                 for (let i = 1; i <= pdf.numPages; i++) {
                     const page = await pdf.getPage(i);
                     const textContent = await page.getTextContent();
-                    fullText += textContent.items.map(item => item.str).join(' ') + '\n\n';
+                    parts.push(textContent.items.map(item => item.str).join(' '));
                 }
-                return { type: 'text', content: fullText };
+                return { type: 'text', content: parts.join('\n\n') };
             }
 
             if (fileExt === 'epub') {
@@ -456,12 +486,13 @@
                         const wordCount = text.split(/\s+/).filter(Boolean).length;
                         
                         // Store chapter data for virtual rendering.
-                        AppState.chapterData.push({ startWordIndex: cumulativeWordIndex, wordCount: wordCount, isRendered: false, html: cleanedDiv.innerHTML });
+                        AppState.chapterData.push({ startWordIndex: cumulativeWordIndex, wordCount: wordCount, isRendered: false });
                         
                         chapterTexts.push(text);
                         cumulativeWordIndex += wordCount;
                     }
                     processText(chapterTexts.join('\n\n'));
+                    chapterTexts.length = 0; // release
                 } else { // For TXT, PDF, DOCX
                     AppState.epubBook = null;
                     processText(content);
@@ -514,7 +545,13 @@
                 const container = document.getElementById(`chapter-container-${chapterIndex}`);
                 if (container) target = container.querySelector(`.context-word[data-word-index="${wordIndex}"]`);
             } else {
-                target = DOM.viewerText.querySelector(`.context-word[data-word-index="${wordIndex}"]`);
+                const blockIndex = findBlockIndexForWord(wordIndex);
+                if (blockIndex === -1) return;
+                if (!AppState.blockData[blockIndex].isRendered) {
+                    await renderBlock(blockIndex);
+                }
+                const container = document.getElementById(`block-container-${blockIndex}`);
+                if (container) target = container.querySelector(`.context-word[data-word-index="${wordIndex}"]`);
             }
 
             if (target) {
@@ -546,6 +583,56 @@
             chapterInfo.isRendered = false;
         }
 
+        function findBlockIndexForWord(wordIndex) {
+            return AppState.blockData.findIndex(b => wordIndex >= b.startWordIndex && wordIndex < b.startWordIndex + b.wordCount);
+        }
+
+        function unrenderBlock(blockIndex) {
+            const blockInfo = AppState.blockData[blockIndex];
+            if (!blockInfo || !blockInfo.isRendered) return;
+            const container = document.getElementById(`block-container-${blockIndex}`);
+            if (container) {
+                container.innerHTML = 'Loading...';
+                container.className = 'chapter-placeholder';
+            }
+            blockInfo.isRendered = false;
+        }
+
+        async function renderBlock(blockIndex) {
+            const blockInfo = AppState.blockData[blockIndex];
+            if (!blockInfo || blockInfo.isRendered) return;
+            const placeholder = document.getElementById(`block-container-${blockIndex}`);
+            if (!placeholder) return;
+
+            const start = blockInfo.startWordIndex;
+            const end = Math.min(start + blockInfo.wordCount, AppState.wordsOnly.length);
+            let html = '<p>';
+            for (let i = start; i < end; i++) {
+                const word = AppState.wordsOnly[i];
+                const displayWord = AppState.isBionicTextEnabled ? toBionicText(word) : word;
+                html += `<span class="context-word" data-word-index="${i}" tabindex="0">${displayWord}</span>`;
+                if (AppState.pauseMap[i] === Config.PAUSE_MULTIPLIERS.paragraph) html += '</p><p>';
+                else html += ' ';
+            }
+            html += '</p>';
+            placeholder.innerHTML = html.replace(/<p><\/p>/g, '');
+            placeholder.classList.remove('chapter-placeholder');
+            
+            placeholder.querySelectorAll('.context-word').forEach(el => {
+                const jumpToWord = () => {
+                    const wordIdx = parseInt(el.dataset.wordIndex, 10);
+                    if (!isNaN(wordIdx) && wordIdx < AppState.wordsOnly.length) {
+                        stopRSVP(); AppState.currentItemIndex = wordIdx;
+                        displayWordWithFixation(AppState.wordsOnly[wordIdx]);
+                        highlightContextWord(wordIdx); updatePlayerControlsState();
+                    }
+                };
+                el.addEventListener('click', jumpToWord);
+                el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); jumpToWord(); }});
+            });
+            blockInfo.isRendered = true;
+        }
+
         // Renders an EPUB chapter into the DOM, wrapping words in spans for interaction.
         async function renderChapter(chapterIndex) {
             const chapterInfo = AppState.chapterData[chapterIndex];
@@ -555,8 +642,12 @@
             if (!placeholder) return;
 
             try {
+                const item = AppState.epubBook.spine.spineItems[chapterIndex];
+                const section = await AppState.epubBook.section(item.index);
+                const sectionHtml = await section.render(AppState.epubBook.load.bind(AppState.epubBook));
+                const cleanedDiv = cleanEpubHtml(sectionHtml);
                 const contentDiv = document.createElement('div');
-                contentDiv.innerHTML = chapterInfo.html;
+                contentDiv.innerHTML = cleanedDiv.innerHTML;
                 
                 // Use a TreeWalker to efficiently find all text nodes.
                 let wordIndexCounter = chapterInfo.startWordIndex;
@@ -608,6 +699,8 @@
                 });
 
                 chapterInfo.isRendered = true;
+                // Release temporary DOM references for GC
+                // cleanedDiv and walker variables go out of scope; no persistent HTML stored
             } catch (error) {
                 placeholder.textContent = `Error loading chapter.`;
             }
@@ -642,31 +735,33 @@
 
                 document.querySelectorAll('.chapter-placeholder').forEach(el => AppState.viewerObserver.observe(el));
 
-            } else { // For non-EPUB files, render everything at once.
-                let html = '<p>';
-                for (let i = 0; i < AppState.wordsOnly.length; i++) {
-                    const word = AppState.wordsOnly[i];
-                    const displayWord = AppState.isBionicTextEnabled ? toBionicText(word) : word;
-                    html += `<span class="context-word" data-word-index="${i}" tabindex="0">${displayWord}</span>`;
-                    if (AppState.pauseMap[i] === Config.PAUSE_MULTIPLIERS.paragraph) html += '</p><p>';
-                    else html += ' ';
+            } else { // For non-EPUB files, virtualize by blocks
+                AppState.blockData = [];
+                const totalWords = AppState.wordsOnly.length;
+                const blockSize = Config.VIRTUAL_BLOCK_WORDS;
+                for (let start = 0, blockIndex = 0; start < totalWords; start += blockSize, blockIndex++) {
+                    const count = Math.min(blockSize, totalWords - start);
+                    AppState.blockData.push({ startWordIndex: start, wordCount: count, isRendered: false });
+                    const placeholder = document.createElement('div');
+                    placeholder.id = `block-container-${blockIndex}`;
+                    placeholder.className = 'chapter-placeholder';
+                    placeholder.dataset.blockIndex = blockIndex;
+                    placeholder.textContent = `Loading...`;
+                    DOM.viewerText.appendChild(placeholder);
                 }
-                html += '</p>';
-                DOM.viewerText.innerHTML = html.replace(/<p><\/p>/g, '');
-                
-                // Add event listeners to all word spans.
-                DOM.viewerText.querySelectorAll('.context-word').forEach(el => {
-                    const jumpToWord = () => {
-                        const wordIdx = parseInt(el.dataset.wordIndex, 10);
-                        if (!isNaN(wordIdx) && wordIdx < AppState.wordsOnly.length) {
-                            stopRSVP(); AppState.currentItemIndex = wordIdx;
-                            displayWordWithFixation(AppState.wordsOnly[wordIdx]);
-                            highlightContextWord(wordIdx); updatePlayerControlsState();
+
+                AppState.viewerObserver = new IntersectionObserver((entries) => {
+                    entries.forEach(entry => {
+                        const blockIndex = parseInt(entry.target.dataset.blockIndex, 10);
+                        if (entry.isIntersecting) {
+                            renderBlock(blockIndex);
+                        } else {
+                            unrenderBlock(blockIndex);
                         }
-                    };
-                    el.addEventListener('click', jumpToWord);
-                    el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); jumpToWord(); }});
-                });
+                    });
+                }, { root: DOM.viewerText, rootMargin: '1000px 0px' });
+
+                document.querySelectorAll('[data-block-index]').forEach(el => AppState.viewerObserver.observe(el));
             }
 
             DOM.viewerPlaceholder.classList.remove('active');
