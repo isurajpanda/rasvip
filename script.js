@@ -405,6 +405,38 @@
             }
         }
 
+        // Streams a plain text File and incrementally appends words without holding the full file in memory
+        async function streamTextFile(file) {
+            if (!file || !file.stream) {
+                const text = await file.text();
+                appendTextFragment(text);
+                return;
+            }
+            const reader = file.stream().getReader();
+            const decoder = new TextDecoder('utf-8');
+            let carry = '';
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                const chunkText = decoder.decode(value, { stream: true });
+                const combined = carry + chunkText;
+                let lastBoundary = -1;
+                const whitespaceRegex = /\s+/g;
+                let match;
+                while ((match = whitespaceRegex.exec(combined)) !== null) {
+                    lastBoundary = whitespaceRegex.lastIndex;
+                }
+                if (lastBoundary === -1) {
+                    carry = combined;
+                    continue;
+                }
+                const consumable = combined.slice(0, lastBoundary);
+                carry = combined.slice(lastBoundary);
+                appendTextFragment(consumable);
+            }
+            if (carry) appendTextFragment(carry);
+        }
+
 
         // --- File Handling & Processing ---
 
@@ -422,47 +454,16 @@
             return contentDiv;
         }
 
-        // Extracts content from a file based on its extension.
-        async function extractContent(file) {
-            const fileExt = file.name.split('.').pop().toLowerCase();
-            
-            if (fileExt === 'txt') {
-                const text = await file.text();
-                return { type: 'text', content: text };
-            }
-            
-            if (fileExt === 'pdf') {
-                if (!window.pdfjsLib) throw new Error("PDF.js library is not loaded.");
-                const arrayBuffer = await file.arrayBuffer();
-                const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-                const parts = [];
-                for (let i = 1; i <= pdf.numPages; i++) {
-                    const page = await pdf.getPage(i);
-                    const textContent = await page.getTextContent();
-                    parts.push(textContent.items.map(item => item.str).join(' '));
-                }
-                return { type: 'text', content: parts.join('\n\n') };
-            }
-
-            if (fileExt === 'epub') {
-                if (!window.ePub || !window.JSZip) throw new Error("EPUB.js or JSZip is not loaded.");
-                window.ePub.JSZip = window.JSZip; // Required by ePub.js
-                const book = window.ePub(await file.arrayBuffer());
-                await book.ready;
-                return { type: 'epub', content: book };
-            }
-
-            if (fileExt === 'docx') {
-                if (!window.mammoth) throw new Error("Mammoth.js library is not loaded.");
-                const arrayBuffer = await file.arrayBuffer();
-                const result = await window.mammoth.extractRawText({ arrayBuffer: arrayBuffer });
-                return { type: 'text', content: result.value };
-            }
-
-            throw new Error('Unsupported file type.');
+        // Prepare EPUB book; other formats will be streamed/appended directly
+        async function prepareEpub(file) {
+            if (!window.ePub || !window.JSZip) throw new Error("EPUB.js or JSZip is not loaded.");
+            window.ePub.JSZip = window.JSZip;
+            const book = window.ePub(await file.arrayBuffer());
+            await book.ready;
+            return book;
         }
 
-        // Main function to handle file loading, processing, and UI updates.
+        // Main function to handle file loading, processing, and UI updates with streaming/incremental appends
         async function loadAndProcessFile(file) {
             if (!file) return;
             resetUIState();
@@ -470,32 +471,48 @@
             setMessage(`Loading ${file.name}...`, 'loading', 0);
 
             try {
-                const { type, content } = await extractContent(file);
-                AppState.currentFileType = type;
+                const fileExt = file.name.split('.').pop().toLowerCase();
+                AppState.chapterData = [];
+                AppState.blockData = [];
 
-                if (type === 'epub') {
-                    AppState.epubBook = content;
+                if (fileExt === 'epub') {
+                    AppState.currentFileType = 'epub';
+                    AppState.epubBook = await prepareEpub(file);
                     let cumulativeWordIndex = 0;
-                    const chapterTexts = [];
-                    // Iterate through the EPUB's spine to process each chapter.
                     for (const item of AppState.epubBook.spine.spineItems) {
                         const section = await AppState.epubBook.section(item.index);
                         const sectionHtml = await section.render(AppState.epubBook.load.bind(AppState.epubBook));
                         const cleanedDiv = cleanEpubHtml(sectionHtml);
                         const text = cleanedDiv.textContent || "";
                         const wordCount = text.split(/\s+/).filter(Boolean).length;
-                        
-                        // Store chapter data for virtual rendering.
                         AppState.chapterData.push({ startWordIndex: cumulativeWordIndex, wordCount: wordCount, isRendered: false });
-                        
-                        chapterTexts.push(text);
+                        appendTextFragment(text, true);
                         cumulativeWordIndex += wordCount;
                     }
-                    processText(chapterTexts.join('\n\n'));
-                    chapterTexts.length = 0; // release
-                } else { // For TXT, PDF, DOCX
+                } else if (fileExt === 'pdf') {
+                    if (!window.pdfjsLib) throw new Error("PDF.js library is not loaded.");
+                    AppState.currentFileType = 'text';
                     AppState.epubBook = null;
-                    processText(content);
+                    const arrayBuffer = await file.arrayBuffer();
+                    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                    for (let i = 1; i <= pdf.numPages; i++) {
+                        const page = await pdf.getPage(i);
+                        const textContent = await page.getTextContent();
+                        appendTextFragment(textContent.items.map(item => item.str).join(' '), true);
+                    }
+                } else if (fileExt === 'docx') {
+                    if (!window.mammoth) throw new Error("Mammoth.js library is not loaded.");
+                    AppState.currentFileType = 'text';
+                    AppState.epubBook = null;
+                    const arrayBuffer = await file.arrayBuffer();
+                    const result = await window.mammoth.extractRawText({ arrayBuffer });
+                    appendTextFragment(result.value, true);
+                } else if (fileExt === 'txt') {
+                    AppState.currentFileType = 'text';
+                    AppState.epubBook = null;
+                    await streamTextFile(file);
+                } else {
+                    throw new Error('Unsupported file type.');
                 }
 
                 if (AppState.wordsOnly.length === 0) {
@@ -504,6 +521,7 @@
 
                 buildAndLoadContextViewer();
                 if (AppState.wordsOnly.length > 0) {
+                    displayWordWithFixation(AppState.wordsOnly[0]);
                     highlightContextWord(0);
                 }
 
